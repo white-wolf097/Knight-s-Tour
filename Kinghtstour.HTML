@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Knight's Tour</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #f6f6f6;
+      padding: 18px;
+    }
+
+    h1 { margin: 6px 0 10px 0; }
+
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 80px);
+      grid-template-rows: repeat(8, 80px);
+      gap: 0;
+      border: 2px solid #333;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    }
+
+    .cell {
+      width: 80px;
+      height: 80px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      cursor: pointer;
+      position: relative;
+      user-select: none;
+      transition: background 150ms ease, box-shadow 150ms ease;
+    }
+
+    .white { background: #f0e9dd; }
+    .dark  { background: #4a4a4a; }
+
+    /* visited = permanently used */
+    .used {
+      background: #000 !important;
+      cursor: not-allowed;
+    }
+
+    /* legal move highlight (green border) */
+    .highlight {
+      box-shadow: inset 0 0 0 4px rgba(76,175,80,0.85);
+    }
+
+    /* correct move highlight (yellow background + border) */
+    .correct {
+      background-color: #fff8b3 !important;
+      box-shadow: inset 0 0 0 4px rgba(255, 193, 7, 0.85);
+    }
+
+    /* bigger inline knight */
+    .knight-svg {
+      width: 68px;
+      height: 68px;
+      pointer-events: none;
+      display: block;
+    }
+
+    #controls {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    #status {
+      margin-top: 8px;
+      font-weight: 600;
+      min-width: 280px;
+    }
+
+    #moveCount { font-weight: 600; margin-right: 8px; }
+
+  </style>
+</head>
+<body>
+
+  <h1>Knight's Tour</h1>
+  <div id="board" aria-label="Chessboard"></div>
+
+  <div id="controls">
+    <span id="moveCount">Moves: 0</span>
+    <button id="undoBtn">Undo</button>
+    <button id="restartBtn">Restart</button>
+    <!-- New cheat buttons -->
+    <button id="btnA">Button A</button>
+    <button id="btnB">Button B</button>
+  </div>
+  <div id="status">Make your first move!</div>
+
+<script>
+  // Inline SVG knight (glyph) — no external requests
+  const KNIGHT_SVG = `
+    <svg class="knight-svg" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect width="64" height="64" fill="none"/>
+      <!-- big white knight glyph with black stroke for visibility -->
+      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+            font-size="44" font-family="serif" fill="#ffffff" stroke="#000000" stroke-width="1.5">♞</text>
+    </svg>`;
+
+  const boardEl = document.getElementById('board');
+  const moveCountEl = document.getElementById('moveCount');
+  const statusEl = document.getElementById('status');
+  const undoBtn = document.getElementById('undoBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const btnA = document.getElementById('btnA');
+  const btnB = document.getElementById('btnB');
+
+  const SIZE = 8;
+  let knightPos = null;     // {row, col} or null
+  let moves = [];           // move history, each {row, col}
+
+  // Cheat mode state and sequence tracking
+  let cheatMode = false;
+  const cheatCode = ['A', 'B', 'B', 'A', 'B', 'A', 'A', 'B'];
+  let cheatSequence = [];
+
+  // Build board
+  function createBoard() {
+    boardEl.innerHTML = '';
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        const cell = document.createElement('div');
+        cell.classList.add('cell', ((r + c) % 2 === 0) ? 'white' : 'dark');
+        cell.dataset.row = r;
+        cell.dataset.col = c;
+        cell.addEventListener('click', () => cellClicked(r, c));
+        boardEl.appendChild(cell);
+      }
+    }
+    updateMoveCount();
+    statusEl.textContent = 'Make your first move!';
+  }
+
+  function getCell(r, c) {
+    return boardEl.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+  }
+
+  // Knight L-shape rule
+  function isLegalMove(r1, c1, r2, c2) {
+    const dr = Math.abs(r1 - r2), dc = Math.abs(c1 - c2);
+    return (dr === 2 && dc === 1) || (dr === 1 && dc === 2);
+  }
+
+  // Return legal destinations from (r,c) that are not used
+  function getLegalMoves(r, c) {
+    const cand = [
+      [r+2,c+1],[r+2,c-1],[r-2,c+1],[r-2,c-1],
+      [r+1,c+2],[r+1,c-2],[r-1,c+2],[r-1,c-2]
+    ];
+    return cand.filter(([rr,cc]) =>
+      rr >= 0 && rr < SIZE && cc >= 0 && cc < SIZE &&
+      !getCell(rr, cc).classList.contains('used')
+    );
+  }
+
+  function clearHighlights() {
+    boardEl.querySelectorAll('.highlight, .correct').forEach(el => {
+      el.classList.remove('highlight', 'correct');
+    });
+  }
+
+  function highlightMovesForCurrentKnight() {
+    clearHighlights();
+    if (!knightPos) return;
+    const movesList = getLegalMoves(knightPos.row, knightPos.col);
+
+    if (movesList.length === 0) return;
+
+    if (!cheatMode) {
+      // Cheat off: just highlight all legal moves green
+      movesList.forEach(([r, c]) => {
+        getCell(r, c).classList.add('highlight');
+      });
+    } else {
+      // Cheat on: highlight "correct" move yellow, others green
+      // Calculate onward moves count for each legal move (Warnsdorff's heuristic)
+      const onwardCounts = movesList.map(([r, c]) => {
+        return getLegalMoves(r, c).length;
+      });
+
+      // Find minimum onward moves count
+      const minCount = Math.min(...onwardCounts);
+
+      movesList.forEach(([r, c], idx) => {
+        const cell = getCell(r, c);
+        if (onwardCounts[idx] === minCount) {
+          // Correct move (yellow)
+          cell.classList.add('correct');
+        } else {
+          // Other legal moves (green highlight)
+          cell.classList.add('highlight');
+        }
+      });
+    }
+  }
+
+  function placeKnight(r, c) {
+    // Remove any existing knight SVGs (we'll add to the target)
+    boardEl.querySelectorAll('.knight-svg').forEach(el => el.remove());
+
+    // Add knight SVG to the chosen cell
+    const cell = getCell(r, c);
+    cell.insertAdjacentHTML('beforeend', KNIGHT_SVG);
+
+    // Mark used and record move
+    cell.classList.add('used');
+    moves.push({ row: r, col: c });
+    knightPos = { row: r, col: c };
+
+    updateMoveCount();
+  }
+
+  function cellClicked(row, col) {
+    const cell = getCell(row, col);
+
+    // If first move (no knight on board), allow any cell that's not used
+    if (!knightPos) {
+      if (cell.classList.contains('used')) {
+        statusEl.textContent = 'That square is already used.';
+        return;
+      }
+      placeKnight(row, col);
+      highlightMovesForCurrentKnight();
+      statusEl.textContent = `Moves made: ${moves.length}`;
+      return;
+    }
+
+    // If knight already placed: only allow highlighted (legal) moves
+    if (!cell.classList.contains('highlight') && !cell.classList.contains('correct')) {
+      statusEl.textContent = 'Pick a highlighted legal move.';
+      return;
+    }
+
+    // Move to the highlighted target
+    placeKnight(row, col);
+    highlightMovesForCurrentKnight();
+
+    // Check win / game over
+    if (moves.length === SIZE * SIZE) {
+      clearHighlights();
+      statusEl.textContent = '🎉 You completed the Knight\'s Tour!';
+      return;
+    }
+    const next = getLegalMoves(knightPos.row, knightPos.col);
+    if (next.length === 0) {
+      clearHighlights();
+      statusEl.textContent = `Game over — no legal moves left. Moves made: ${moves.length}`;
+    } else {
+      statusEl.textContent = `Moves made: ${moves.length}`;
+    }
+  }
+
+  function undoMove() {
+    if (moves.length === 0) {
+      statusEl.textContent = 'Nothing to undo.';
+      return;
+    }
+
+    // Remove last move
+    const last = moves.pop();
+    const lastCell = getCell(last.row, last.col);
+
+    // Remove knight SVG from board (we will re-place to the previous if exists)
+    lastCell.querySelectorAll('.knight-svg').forEach(el => el.remove());
+    // Unmark used so it becomes available again
+    lastCell.classList.remove('used');
+
+    if (moves.length === 0) {
+      // No previous position -> knight removed from board
+      knightPos = null;
+      clearHighlights();
+      statusEl.textContent = 'Make your first move!';
+      updateMoveCount();
+      return;
+    }
+
+    // Place knight back on previous position (which is still marked used)
+    const prev = moves[moves.length - 1];
+    knightPos = { row: prev.row, col: prev.col };
+    const prevCell = getCell(prev.row, prev.col);
+    // remove any svg (defensive) then add
+    prevCell.querySelectorAll('.knight-svg').forEach(el => el.remove());
+    prevCell.insertAdjacentHTML('beforeend', KNIGHT_SVG);
+
+    highlightMovesForCurrentKnight();
+    updateMoveCount();
+    statusEl.textContent = `Moves made: ${moves.length}`;
+  }
+
+  function restartGame() {
+    moves = [];
+    knightPos = null;
+    boardEl.querySelectorAll('.cell').forEach(cell => {
+      cell.classList.remove('used', 'highlight', 'correct');
+      cell.querySelectorAll('.knight-svg').forEach(el => el.remove());
+    });
+    clearHighlights();
+    updateMoveCount();
+    statusEl.textContent = 'Make your first move!';
+  }
+
+  function updateMoveCount() {
+    moveCountEl.textContent = `Moves: ${moves.length}`;
+  }
+
+  // Handle cheat button clicks
+  btnA.addEventListener('click', () => {
+    recordCheatInput('A');
+  });
+  btnB.addEventListener('click', () => {
+    recordCheatInput('B');
+  });
+
+  function recordCheatInput(button) {
+    cheatSequence.push(button);
+    // Keep sequence length limited to cheatCode length
+    if (cheatSequence.length > cheatCode.length) {
+      cheatSequence.shift();
+    }
+    // Check if sequence matches cheatCode exactly
+    if (cheatSequence.length === cheatCode.length &&
+        cheatSequence.every((val, idx) => val === cheatCode[idx])) {
+      cheatMode = !cheatMode; // toggle cheat mode
+      // No status message about cheat mode shown
+      highlightMovesForCurrentKnight();
+      cheatSequence = []; // reset sequence after activation
+    }
+  }
+
+  // wire up buttons
+  undoBtn.addEventListener('click', undoMove);
+  restartBtn.addEventListener('click', restartGame);
+
+  // init
+  createBoard();
+
+</script>
+
+</body>
+</html>
